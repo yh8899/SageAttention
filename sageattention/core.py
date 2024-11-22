@@ -112,6 +112,9 @@ def sageattn(
     - All tensors must be on the same cuda device.
     """
         
+    # major, minor = torch.cuda.get_device_capability()
+    # arch = f"sm{major}{minor}"
+    
     arch = get_cuda_arch_versions()[q.device.index]
     if arch == "sm80":
         return sageattn_qk_int8_pv_fp16_cuda(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32")
@@ -612,7 +615,7 @@ def sageattn_qk_int8_pv_fp8_cuda(
     o = torch.empty(q.size(), dtype=dtype, device=q.device)
 
     if pv_accum_dtype == 'fp32+fp32' and smooth_v:
-        warnings.warn("pv_accum_dtype is 'fp32+fp32', smooth_v will be ignored.")
+        # warnings.warn("pv_accum_dtype is 'fp32+fp32', smooth_v will be ignored.")
         smooth_v = False
 
     v_fp8, v_scale, vm = per_channel_fp8(v, tensor_layout=tensor_layout, smooth_v=smooth_v)
@@ -623,9 +626,48 @@ def sageattn_qk_int8_pv_fp8_cuda(
         else:
             lse = qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
     elif pv_accum_dtype == "fp32+fp32":
-        lse = qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
+        lse = torch.ops.sageattn.qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
+        
+        # lse = qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
 
     if return_lse:
         return o, lse / 1.44269504 + lse_correction * sm_scale if smooth_k else lse / 1.44269504
     else:
         return o
+
+@torch.library.custom_op("sageattn::qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf", mutates_args={'o'}, device_types="cuda")
+def _qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(
+    q: torch.Tensor, 
+    k: torch.Tensor, 
+    v: torch.Tensor, 
+    o: torch.Tensor, 
+    q_scale: torch.Tensor, 
+    k_scale: torch.Tensor, 
+    v_scale: torch.Tensor, 
+    tensor_layout: int, 
+    is_causal: bool, 
+    sm_scale: float, 
+    return_lse: bool,
+) -> torch.Tensor:
+    return qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q, k, v, o, q_scale, k_scale, v_scale, tensor_layout, is_causal, sm_scale, return_lse)
+
+@torch.library.register_fake("sageattn::qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf")
+def _(
+    q: torch.Tensor, 
+    k: torch.Tensor, 
+    v: torch.Tensor, 
+    o: torch.Tensor, 
+    q_scale: torch.Tensor, 
+    k_scale: torch.Tensor, 
+    v_scale: torch.Tensor, 
+    tensor_layout: int, 
+    is_causal: bool, 
+    sm_scale: float, 
+    return_lse: bool,
+) -> torch.Tensor:
+    batch_size, num_heads, seqlen_q, head_size = q.shape
+    if return_lse:
+        softmax_lse = torch.empty((batch_size, num_heads, seqlen_q), dtype=torch.float32, device=q.device, layout=q.layout)
+    else:
+        softmax_lse = torch.empty((0))
+    return softmax_lse
