@@ -174,7 +174,7 @@ def per_warp_int8(
 
     if km is not None:
         km = km.squeeze(1) if _tensor_layout == 0 else km.squeeze(2)
-        quant_per_block_int8_fuse_sub_mean_cuda(k, km, k_int8, k_scale, 64, _tensor_layout)
+        torch.ops.sageattn._quant_per_block_int8_fuse_sub_mean_cuda(k, km, k_int8, k_scale, 64, _tensor_layout)
     else:
         quant_per_block_int8_cuda(k, k_int8, k_scale, 64, _tensor_layout)
     
@@ -188,6 +188,17 @@ def _quant_per_warp_int8_cuda(
     tensor_layout: int
 ) -> None:
     quant_per_warp_int8_cuda(q, q_int8, q_scale, tensor_layout)
+
+@torch.library.custom_op("sageattn::_quant_per_block_int8_fuse_sub_mean_cuda", mutates_args={'k_int8', 'k_scale'}, device_types='cuda')
+def _quant_per_block_int8_fuse_sub_mean_cuda(
+    k: torch.Tensor,
+    km: torch.Tensor,
+    k_int8: torch.Tensor,
+    k_scale: torch.Tensor,
+    BLKQ: int,
+    tensor_layout: int
+) -> None:
+    quant_per_block_int8_fuse_sub_mean_cuda(k, km, k_int8, k_scale, BLKQ, tensor_layout)
 
 def sub_mean(
     v: torch.Tensor, 
@@ -288,7 +299,7 @@ def per_channel_fp8(
         padded_len = (kv_len + 63) // 64 * 64
         v_transposed_permutted = torch.empty((b, head_dim, h_kv, padded_len), dtype=v.dtype, device=v.device)
     
-    transpose_pad_permute_cuda(v, v_transposed_permutted, _tensor_layout)
+    torch.ops.sageattn._transpose_pad_permute_cuda(v, v_transposed_permutted, _tensor_layout)
 
     v_fp8 = torch.empty(v_transposed_permutted.shape, dtype=torch.float8_e4m3fn, device=v.device)
 
@@ -299,8 +310,27 @@ def per_channel_fp8(
         mean_scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, vm, v_scale, kv_len, scale_max, _tensor_layout)
         return v_fp8, v_scale, vm
     else:
-        scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, scale_max, _tensor_layout)
+        torch.ops.sageattn._scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, scale_max, _tensor_layout)
         return v_fp8, v_scale, None
+
+@torch.library.custom_op("sageattn::_transpose_pad_permute_cuda", mutates_args={'v_transposed_permutted'}, device_types='cuda')
+def _transpose_pad_permute_cuda(
+    v: torch.Tensor,
+    v_transposed_permutted: torch.Tensor,
+    tensor_layout: int
+) -> None:
+    transpose_pad_permute_cuda(v, v_transposed_permutted, tensor_layout)
+
+@torch.library.custom_op("sageattn::_scale_fuse_quant_cuda", mutates_args={'v_fp8', 'v_scale'}, device_types='cuda')
+def _scale_fuse_quant_cuda(
+    v: torch.Tensor,
+    v_fp8: torch.Tensor,
+    v_scale: torch.Tensor,
+    kv_len: int,
+    scale_max: float,
+    tensor_layout: int
+) -> None:
+    scale_fuse_quant_cuda(v, v_fp8, v_scale, kv_len, scale_max, tensor_layout)
 
 
 
