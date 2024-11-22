@@ -626,7 +626,7 @@ def sageattn_qk_int8_pv_fp8_cuda(
         else:
             lse = qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
     elif pv_accum_dtype == "fp32+fp32":
-        lse = torch.ops.sageattn.qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
+        lse = torch.ops.sageattn._qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
         
         # lse = qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, _tensor_layout, _is_caual, sm_scale, _return_lse)
 
@@ -635,7 +635,10 @@ def sageattn_qk_int8_pv_fp8_cuda(
     else:
         return o
 
-@torch.library.custom_op("sageattn::qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf", mutates_args={'o'}, device_types="cuda")
+def maybe_contiguous(x):
+    return x.contiguous() if x is not None and x.stride(-1) != 1 else x
+
+@torch.library.custom_op("sageattn::_qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf", mutates_args="unknown", device_types="cuda")
 def _qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(
     q: torch.Tensor, 
     k: torch.Tensor, 
@@ -648,26 +651,6 @@ def _qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(
     is_causal: bool, 
     sm_scale: float, 
     return_lse: bool,
-) -> torch.Tensor:
-    return qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q, k, v, o, q_scale, k_scale, v_scale, tensor_layout, is_causal, sm_scale, return_lse)
-
-@torch.library.register_fake("sageattn::qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf")
-def _(
-    q: torch.Tensor, 
-    k: torch.Tensor, 
-    v: torch.Tensor, 
-    o: torch.Tensor, 
-    q_scale: torch.Tensor, 
-    k_scale: torch.Tensor, 
-    v_scale: torch.Tensor, 
-    tensor_layout: int, 
-    is_causal: bool, 
-    sm_scale: float, 
-    return_lse: bool,
-) -> torch.Tensor:
-    batch_size, num_heads, seqlen_q, head_size = q.shape
-    if return_lse:
-        softmax_lse = torch.empty((batch_size, num_heads, seqlen_q), dtype=torch.float32, device=q.device, layout=q.layout)
-    else:
-        softmax_lse = torch.empty((0))
-    return softmax_lse
+) -> None:
+    q, k, v = [maybe_contiguous(x) for x in (q, k, v)]
+    qk_int8_sv_f8_accum_f32_fuse_v_scale_attn_per_warp_buf(q, k, v, o, q_scale, k_scale, v_scale, tensor_layout, is_causal, sm_scale, return_lse)
