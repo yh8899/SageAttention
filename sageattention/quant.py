@@ -169,7 +169,8 @@ def per_warp_int8(
     q_scale = torch.empty((b, h_qo, ((qo_len + 127) // 128) * (128 // 32)), device=q.device, dtype=torch.float32)
     k_scale = torch.empty((b, h_kv, (kv_len + 63) // 64), device=q.device, dtype=torch.float32)
 
-    quant_per_warp_int8_cuda(q, q_int8, q_scale, _tensor_layout)
+    torch.ops.sageattn._quant_per_warp_int8_cuda(q, q_int8, q_scale, _tensor_layout)
+    # quant_per_warp_int8_cuda(q, q_int8, q_scale, _tensor_layout)
 
     if km is not None:
         km = km.squeeze(1) if _tensor_layout == 0 else km.squeeze(2)
@@ -178,6 +179,15 @@ def per_warp_int8(
         quant_per_block_int8_cuda(k, k_int8, k_scale, 64, _tensor_layout)
     
     return q_int8, q_scale, k_int8, k_scale
+
+@torch.library.custom_op("sageattn::_quant_per_warp_int8_cuda", mutates_args={"q_int8", "q_scale"}, device_types="cuda")
+def _quant_per_warp_int8_cuda(
+    q: torch.Tensor,
+    q_int8: torch.Tensor,
+    q_scale: torch.Tensor,
+    tensor_layout: int
+) -> None:
+    quant_per_warp_int8_cuda(q, q_int8, q_scale, tensor_layout)
 
 def sub_mean(
     v: torch.Tensor, 
